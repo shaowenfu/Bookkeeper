@@ -1,0 +1,49 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 可选：配置了 BK_KEYSTORE_BASE64 等 Secrets 时用固定签名，APK 可以覆盖安装不丢数据
+      - name: Prepare signing key (optional)
+        env:
+          KEYSTORE_B64: ${{ secrets.BK_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/bk.jks"
+            echo "BK_KEYSTORE_FILE=$RUNNER_TEMP/bk.jks" >> "$GITHUB_ENV"
+            echo "Using fixed signing key"
+          else
+            echo "No signing secret; using a throwaway debug key"
+          fi
+
+      - name: Build debug APK
+        env:
+          BK_KEYSTORE_PASSWORD: ${{ secrets.BK_KEYSTORE_PASSWORD }}
+          BK_KEY_ALIAS: ${{ secrets.BK_KEY_ALIAS }}
+          BK_KEY_PASSWORD: ${{ secrets.BK_KEY_PASSWORD }}
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Check analysis script
+        run: python3 -m py_compile tools/analyze_delay.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bookkeeper-m0-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
