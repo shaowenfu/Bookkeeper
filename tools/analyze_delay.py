@@ -257,7 +257,7 @@ def main() -> int:
         for e in sorted(events, key=lambda e: e["at"]):
             if e["type"] in ("disconnected", "permission_lost") and down_at is None:
                 down_at = e["at"]
-            elif e["type"] in ("connected", "permission_ok") and down_at is not None:
+            elif e["type"] == "connected" and down_at is not None:  # 只有真正重连才算恢复采样
                 gaps.append((down_at, e["at"]))
                 down_at = None
         if down_at is not None:

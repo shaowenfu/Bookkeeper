@@ -9,6 +9,7 @@ import com.shaowenfu.bookkeeper.data.NotificationSample
 import com.shaowenfu.bookkeeper.data.SeenPackage
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.TimeZone
 
@@ -16,8 +17,9 @@ import java.util.TimeZone
  * 把一条 StatusBarNotification 存成样本。
  *
  * 去重规则（原始数据都保留）：
- *  - 同 key + 内容完全相同 → 视为重发，不新增行，只给原样本 repost_count + 1；
- *  - 同 key + 内容不同 → 新增一行，is_update = true，previous_id 指向上一条；
+ *  - 同 key、该通知仍在通知栏、文本和 extras 都相同（忽略 when） → 视为重发，不新增行，只给原样本 repost_count + 1；
+ *  - 同 key 但上一条已被移除 → 新的一次通知，正常新增；
+ *  - 同 key + 内容或 extras 不同 → 新增一行，is_update = true，previous_id 指向上一条；
  *  - 不同 key + 内容相同 + 10 分钟内 → 新增一行，possible_duplicate_of 指向最早那条。
  */
 object SampleRecorder {
@@ -49,12 +51,18 @@ object SampleRecorder {
         } catch (e: Throwable) {
             "{\"_error\":\"${e.javaClass.simpleName}\"}"
         }
-        val hash = sha256(listOf(pkg, title, text, bigText, subText, lines).joinToString("\u0001") { it ?: "" })
+        val ticker = n.tickerText?.toString()
+        val hash = sha256(
+            listOf(pkg, title, text, bigText, subText, summary, lines, ticker).joinToString("\u0001") { it ?: "" }
+        )
 
         mutex.withLock {
             val dao = db.samples()
-            val prev = dao.latestForKey(pkg, sbn.key)
-            if (prev != null && prev.contentHash == hash) {
+            // 上一条同 key 的通知已被移除 → 这是新的一次通知（例如同额的第二笔付款），不能算重发
+            val prev = dao.latestForKey(pkg, sbn.key)?.takeIf { it.removedAt == null }
+            if (prev != null && prev.contentHash == hash &&
+                normalizedPayload(prev.extrasJson) == normalizedPayload(extrasJson)
+            ) {
                 dao.bumpRepost(prev.id, now)
                 return
             }
@@ -78,7 +86,7 @@ object SampleRecorder {
                     subText = subText,
                     summaryText = summary,
                     textLines = lines,
-                    tickerText = n.tickerText?.toString(),
+                    tickerText = ticker,
                     category = n.category,
                     channelId = n.channelId,
                     groupKey = sbn.groupKey,
@@ -107,6 +115,13 @@ object SampleRecorder {
             val dao = db.seenPackages()
             if (dao.get(pkg) == null) dao.insert(SeenPackage(pkg, 1, now, now)) else dao.bump(pkg, now)
         }
+    }
+
+    /** 去掉每次重发都会变的 when 时间戳，其余 extras 有任何变化都视为更新 */
+    private fun normalizedPayload(json: String): String = try {
+        JSONObject(json).apply { remove("_when") }.toString()
+    } catch (_: Exception) {
+        json
     }
 
     private fun sha256(s: String): String =
