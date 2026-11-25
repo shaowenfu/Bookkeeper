@@ -1,122 +1,109 @@
 package com.shaowenfu.bookkeeper.ui
 
-import android.Manifest
 import android.app.Application
-import android.content.pm.PackageManager
 import android.net.Uri
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.shaowenfu.bookkeeper.Whitelist
 import com.shaowenfu.bookkeeper.data.AppDatabase
-import com.shaowenfu.bookkeeper.data.ListenerEvent
-import com.shaowenfu.bookkeeper.data.NotificationSample
-import com.shaowenfu.bookkeeper.data.PackageCount
-import com.shaowenfu.bookkeeper.data.SeenPackage
+import com.shaowenfu.bookkeeper.data.Capture
+import com.shaowenfu.bookkeeper.data.ServiceEvent
 import com.shaowenfu.bookkeeper.export.Exporter
-import com.shaowenfu.bookkeeper.health.KeepAliveService
-import com.shaowenfu.bookkeeper.health.ListenerHealth
+import com.shaowenfu.bookkeeper.probe.Extractor
+import com.shaowenfu.bookkeeper.probe.Importer
+import com.shaowenfu.bookkeeper.probe.ScreenReaderService
+import com.shaowenfu.bookkeeper.settings.Prefs
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
-data class HealthStatus(
-    val listenerGranted: Boolean = false,
-    val listenerConnected: Boolean = false,
-    val batteryUnrestricted: Boolean = false,
-    val postNotificationsGranted: Boolean = false,
-    val lastCheckAt: Long = 0L,
+data class Health(
+    val serviceEnabled: Boolean = false,
+    val serviceConnected: Boolean = false,
+    val notificationsAllowed: Boolean = false,
+    val apiKeySet: Boolean = false,
 )
 
-data class ExportMessage(val text: String, val uri: Uri?, val mime: String?)
-
-@OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDatabase.get(app)
+    val prefs = Prefs(app)
 
-    val selectedPackage = MutableStateFlow<String?>(null)
+    val captures: StateFlow<List<Capture>> =
+        db.captures().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val events: StateFlow<List<ServiceEvent>> =
+        db.serviceEvents().observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val counts: StateFlow<List<PackageCount>> =
-        db.samples().observeCounts().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _health = MutableStateFlow(Health())
+    val health: StateFlow<Health> = _health
 
-    val samples: StateFlow<List<NotificationSample>> =
-        selectedPackage.flatMapLatest { db.samples().observeRecent(it, 500) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
+    private val _lastExport = MutableStateFlow<Pair<Uri, String>?>(null)
+    val lastExport: StateFlow<Pair<Uri, String>?> = _lastExport
 
-    val events: StateFlow<List<ListenerEvent>> =
-        db.listenerEvents().observeRecent(300).stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private var reportedDead = false
 
-    val seenPackages: StateFlow<List<SeenPackage>> =
-        db.seenPackages().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    val connected: StateFlow<Boolean> = ListenerHealth.connected
-
-    private val _health = MutableStateFlow(HealthStatus())
-    val health: StateFlow<HealthStatus> = _health
-
-    private val _whitelist = MutableStateFlow(Whitelist.packages(app).sorted())
-    val whitelist: StateFlow<List<String>> = _whitelist
-
-    private val _message = MutableStateFlow<ExportMessage?>(null)
-    val message: StateFlow<ExportMessage?> = _message
-
-    fun refreshHealth() {
-        val ctx = getApplication<Application>()
-        ListenerHealth.check(ctx, "app_open")
-        KeepAliveService.start(ctx)
-        _health.value = HealthStatus(
-            listenerGranted = ListenerHealth.isPermissionGranted(ctx),
-            listenerConnected = ListenerHealth.connected.value,
-            batteryUnrestricted = ListenerHealth.isIgnoringBatteryOptimizations(ctx),
-            postNotificationsGranted = ContextCompat.checkSelfPermission(
-                ctx, Manifest.permission.POST_NOTIFICATIONS,
-            ) == PackageManager.PERMISSION_GRANTED,
-            lastCheckAt = ListenerHealth.lastCheckAt.value,
-        )
+    fun refreshHealth(notificationsAllowed: Boolean) {
+        val app = getApplication<Application>()
+        val enabled = ScreenReaderService.isEnabledInSettings(app)
+        val connected = ScreenReaderService.instance != null
+        // 设置里开着但服务没连上：多半是进程被系统杀了，记一笔
+        if (enabled && !connected && !reportedDead) {
+            reportedDead = true
+            ScreenReaderService.logEvent(app, "enabled_but_dead", "app_open")
+        }
+        if (connected) reportedDead = false
+        _health.value = Health(enabled, connected, notificationsAllowed, prefs.apiKey.isNotBlank())
     }
 
-    fun forceReconnect() {
-        ListenerHealth.forceReconnect(getApplication())
-        refreshHealth()
+    fun observe(id: Long): Flow<Capture?> = db.captures().observe(id)
+
+    fun importImages(uris: List<Uri>) = viewModelScope.launch {
+        val ids = withContext(Dispatchers.IO) { Importer.importUris(getApplication(), uris, "gallery") }
+        _message.value = "已导入 ${ids.size} 张截图" + if (prefs.autoImage) "，正在识别" else ""
     }
 
-    fun addToWhitelist(pkg: String) {
-        val p = pkg.trim()
-        if (p.isEmpty()) return
-        Whitelist.add(getApplication(), p)
-        _whitelist.value = Whitelist.packages(getApplication()).sorted()
-        viewModelScope.launch { db.seenPackages().delete(p) }
+    fun rerun(id: Long, text: Boolean, image: Boolean) {
+        Extractor.launch(getApplication(), id, text, image)
+        _message.value = "已重新提交识别"
     }
 
-    fun removeFromWhitelist(pkg: String) {
-        Whitelist.remove(getApplication(), pkg)
-        _whitelist.value = Whitelist.packages(getApplication()).sorted()
-    }
-
-    fun export(json: Boolean) {
+    fun saveLabels(id: Long, label: String?, amount: String?, textOk: Boolean?, imageOk: Boolean?, note: String?) =
         viewModelScope.launch {
-            _message.value = ExportMessage("正在导出…", null, null)
-            _message.value = try {
-                val r = withContext(Dispatchers.IO) {
-                    if (json) Exporter.exportJson(getApplication()) else Exporter.exportCsv(getApplication())
-                }
-                ExportMessage(
-                    "已导出 ${r.rows} 条样本到 下载/Bookkeeper/${r.displayName}",
-                    r.uri, if (json) "application/json" else "text/csv",
-                )
-            } catch (e: Exception) {
-                ExportMessage("导出失败：${e.message ?: e.javaClass.simpleName}", null, null)
+            db.captures().setLabels(id, label?.ifBlank { null }, amount?.ifBlank { null }, textOk, imageOk, note?.ifBlank { null })
+            _message.value = "标注已保存"
+        }
+
+    fun delete(c: Capture) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { c.imagePath?.let { File(it).delete() } }
+        db.captures().delete(c.id)
+    }
+
+    fun export(withImages: Boolean) = viewModelScope.launch {
+        try {
+            val r = withContext(Dispatchers.IO) {
+                if (withImages) Exporter.exportZip(getApplication()) else Exporter.exportJson(getApplication())
             }
+            _lastExport.value = r.uri to if (withImages) "application/zip" else "application/json"
+            _message.value = "已导出 ${r.rows} 条到 下载/Bookkeeper/${r.displayName}"
+        } catch (e: Exception) {
+            _message.value = "导出失败：${e.message}"
         }
     }
 
-    fun dismissMessage() {
-        _message.value = null
+    fun saveSettings(apiKey: String, baseUrl: String, textModel: String, imageModel: String,
+                     autoText: Boolean, autoImage: Boolean, keepShot: Boolean) {
+        prefs.apiKey = apiKey; prefs.baseUrl = baseUrl
+        prefs.textModel = textModel; prefs.imageModel = imageModel
+        prefs.autoText = autoText; prefs.autoImage = autoImage; prefs.keepScreenshot = keepShot
+        _health.value = _health.value.copy(apiKeySet = prefs.apiKey.isNotBlank())
+        _message.value = "设置已保存"
     }
+
+    fun clearMessage() { _message.value = null }
 }

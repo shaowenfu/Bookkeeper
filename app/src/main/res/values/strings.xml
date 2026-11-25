@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">记账采样 M0</string>
-    <string name="listener_label">记账通知采样</string>
+    <string name="app_name">读屏记账 M0′</string>
+    <string name="a11y_label">读屏记账</string>
+    <string name="a11y_description">付款后点一下无障碍按钮或磁贴，读取当前屏幕上的付款信息用于记账。只在你主动触发时读取一次，不监听屏幕，不在后台运行。</string>
+    <string name="tile_label">读屏记账</string>
+    <string name="share_label">读屏记账</string>
 </resources>

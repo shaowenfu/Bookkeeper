@@ -7,136 +7,105 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import com.shaowenfu.bookkeeper.BuildConfig
-import com.shaowenfu.bookkeeper.Whitelist
 import com.shaowenfu.bookkeeper.data.AppDatabase
-import com.shaowenfu.bookkeeper.data.NotificationSample
+import com.shaowenfu.bookkeeper.data.Capture
+import com.shaowenfu.bookkeeper.probe.Extractor
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 
-/** 导出到 下载/Bookkeeper/，供电脑上用 tools/analyze_delay.py 分析。 */
+/**
+ * 导出到 下载/Bookkeeper/。
+ * JSON：节点文字、两路识别结果、耗时、你的标注、无障碍服务连接记录。
+ * ZIP：同一个 JSON 加上全部截图（截图里可能有余额、卡号等，分享前注意）。
+ */
 object Exporter {
     data class Result(val uri: Uri, val displayName: String, val rows: Int)
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
-
     private fun iso(ms: Long?): Any = if (ms == null) JSONObject.NULL else isoFmt.format(Date(ms))
+    private fun n(v: Any?): Any = v ?: JSONObject.NULL
 
-    suspend fun exportJson(context: Context): Result {
+    private suspend fun buildJson(context: Context, withImages: Boolean): Pair<JSONObject, List<Capture>> {
         val db = AppDatabase.get(context)
-        val samples = db.samples().all()
-        val events = db.listenerEvents().all()
-        val seen = db.seenPackages().all()
-
+        val captures = db.captures().all()
+        val events = db.serviceEvents().all()
         val root = JSONObject()
-        root.put("format", "bookkeeper-m0-samples")
+        root.put("format", "bookkeeper-probe-samples")
         root.put("format_version", 1)
         root.put("exported_at", iso(System.currentTimeMillis()))
         root.put("device_tz", TimeZone.getDefault().id)
         root.put("device", "${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
         root.put("app_version", BuildConfig.VERSION_NAME)
-        root.put("boc_package", Whitelist.BOC_PACKAGE)
-        root.put("whitelist", JSONArray(Whitelist.packages(context).sorted()))
+        root.put("includes_images", withImages)
 
         val arr = JSONArray()
-        samples.forEach { s -> arr.put(sampleToJson(context, s)) }
-        root.put("samples", arr)
+        captures.forEach { c -> arr.put(toJson(c, withImages)) }
+        root.put("captures", arr)
 
         val ev = JSONArray()
-        events.forEach { e ->
-            ev.put(JSONObject().apply {
-                put("at", e.at); put("at_iso", iso(e.at)); put("type", e.type); put("detail", e.detail ?: JSONObject.NULL)
-            })
-        }
-        root.put("listener_events", ev)
-
-        val sp = JSONArray()
-        seen.forEach { p ->
-            sp.put(JSONObject().apply {
-                put("package_name", p.packageName); put("count", p.count)
-                put("first_seen_at", iso(p.firstSeenAt)); put("last_seen_at", iso(p.lastSeenAt))
-            })
-        }
-        root.put("other_packages_seen", sp)
-
-        val name = "bookkeeper-m0-${stamp()}.json"
-        val uri = write(context, name, "application/json", root.toString(2).toByteArray(Charsets.UTF_8))
-        return Result(uri, name, samples.size)
+        events.forEach { e -> ev.put(JSONObject().put("at_iso", iso(e.at)).put("at", e.at).put("type", e.type).put("detail", n(e.detail))) }
+        root.put("service_events", ev)
+        return root to captures
     }
 
-    suspend fun exportCsv(context: Context): Result {
-        val samples = AppDatabase.get(context).samples().all()
-        val header = listOf(
-            "id", "package_name", "app_label", "sbn_key", "notification_id", "tag",
-            "post_time", "post_time_iso", "received_at", "received_at_iso", "tz_id", "capture_source",
-            "title", "text", "big_text", "sub_text", "summary_text", "text_lines", "ticker_text",
-            "category", "channel_id", "group_key", "is_group_summary", "is_ongoing", "flags",
-            "is_update", "previous_id", "possible_duplicate_of", "repost_count", "last_seen_at",
-            "removed_at", "removed_reason", "content_hash", "extras_json",
-        )
-        val sb = StringBuilder()
-        sb.append('﻿') // BOM：让 Excel 正确识别 UTF-8 中文
-        sb.append(header.joinToString(",")).append("\r\n")
-        for (s in samples) {
-            val row = listOf<Any?>(
-                s.id, s.packageName, Whitelist.label(context, s.packageName), s.sbnKey, s.notificationId, s.tag,
-                s.postTime, iso(s.postTime), s.receivedAt, iso(s.receivedAt), s.tzId, s.captureSource,
-                s.title, s.text, s.bigText, s.subText, s.summaryText, s.textLines, s.tickerText,
-                s.category, s.channelId, s.groupKey, s.isGroupSummary, s.isOngoing, s.flags,
-                s.isUpdate, s.previousId, s.possibleDuplicateOf, s.repostCount, s.lastSeenAt,
-                s.removedAt, s.removedReason, s.contentHash, s.extrasJson,
-            )
-            sb.append(row.joinToString(",") { csv(it) }).append("\r\n")
+    private fun toJson(c: Capture, withImages: Boolean) = JSONObject().apply {
+        put("id", c.id)
+        put("created_at", c.createdAt); put("created_at_iso", iso(c.createdAt))
+        put("trigger", c.trigger)
+        put("package_name", n(c.packageName)); put("window_title", n(c.windowTitle))
+        put("node_count", c.nodeCount)
+        put("text_chars_first", c.textCharsFirst); put("text_chars", c.textChars); put("retried_read", c.retriedRead)
+        put("read_ms", n(c.readMs))
+        put("flat_text", n(c.flatText))
+        put("nodes", c.nodesJson?.let { runCatching { JSONArray(it) }.getOrNull() } ?: JSONObject.NULL)
+        put("image_status", c.imageStatus); put("image_w", n(c.imageW)); put("image_h", n(c.imageH))
+        put("screenshot_ms", n(c.screenshotMs))
+        put("image_file", if (withImages && c.imagePath != null && File(c.imagePath).exists()) "images/${c.id}.jpg" else JSONObject.NULL)
+        put("text_model", n(c.textModel)); put("text_latency_ms", n(c.textLatencyMs)); put("text_error", n(c.textError))
+        put("text_result", parsed(c.textResult))
+        put("image_model", n(c.imageModel)); put("image_latency_ms", n(c.imageLatencyMs)); put("image_error", n(c.imageError))
+        put("image_parts", n(c.imageParts))
+        put("image_result", parsed(c.imageResult))
+        val found = Extractor.amountsFoundInText(c)
+        put("image_amounts_found_in_text", if (found == null) JSONObject.NULL else "${found.first}/${found.second}")
+        put("page_label", n(c.pageLabel)); put("true_amount", n(c.trueAmount))
+        put("text_ok", n(c.textOk)); put("image_ok", n(c.imageOk)); put("note", n(c.note))
+    }
+
+    private fun parsed(s: String?): Any = when {
+        s == null -> JSONObject.NULL
+        else -> runCatching { JSONObject(s) }.getOrElse { s }
+    }
+
+    suspend fun exportJson(context: Context): Result {
+        val (root, captures) = buildJson(context, withImages = false)
+        val name = "bookkeeper-probe-${stamp()}.json"
+        return Result(write(context, name, "application/json", root.toString(2).toByteArray()), name, captures.size)
+    }
+
+    suspend fun exportZip(context: Context): Result {
+        val (root, captures) = buildJson(context, withImages = true)
+        val buf = ByteArrayOutputStream()
+        ZipOutputStream(buf).use { zip ->
+            zip.putNextEntry(ZipEntry("samples.json"))
+            zip.write(root.toString(2).toByteArray()); zip.closeEntry()
+            captures.forEach { c ->
+                val f = c.imagePath?.let { File(it) }?.takeIf { it.exists() } ?: return@forEach
+                zip.putNextEntry(ZipEntry("images/${c.id}.jpg"))
+                f.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
         }
-        val name = "bookkeeper-m0-${stamp()}.csv"
-        val uri = write(context, name, "text/csv", sb.toString().toByteArray(Charsets.UTF_8))
-        return Result(uri, name, samples.size)
-    }
-
-    private fun sampleToJson(context: Context, s: NotificationSample): JSONObject = JSONObject().apply {
-        put("id", s.id)
-        put("package_name", s.packageName)
-        put("app_label", Whitelist.label(context, s.packageName))
-        put("sbn_key", s.sbnKey)
-        put("notification_id", s.notificationId)
-        put("tag", s.tag ?: JSONObject.NULL)
-        put("post_time", s.postTime)
-        put("post_time_iso", iso(s.postTime))
-        put("received_at", s.receivedAt)
-        put("received_at_iso", iso(s.receivedAt))
-        put("tz_id", s.tzId)
-        put("capture_source", s.captureSource)
-        put("title", s.title ?: JSONObject.NULL)
-        put("text", s.text ?: JSONObject.NULL)
-        put("big_text", s.bigText ?: JSONObject.NULL)
-        put("sub_text", s.subText ?: JSONObject.NULL)
-        put("summary_text", s.summaryText ?: JSONObject.NULL)
-        put("text_lines", s.textLines ?: JSONObject.NULL)
-        put("ticker_text", s.tickerText ?: JSONObject.NULL)
-        put("category", s.category ?: JSONObject.NULL)
-        put("channel_id", s.channelId ?: JSONObject.NULL)
-        put("group_key", s.groupKey ?: JSONObject.NULL)
-        put("is_group_summary", s.isGroupSummary)
-        put("is_ongoing", s.isOngoing)
-        put("flags", s.flags)
-        put("is_update", s.isUpdate)
-        put("previous_id", s.previousId ?: JSONObject.NULL)
-        put("possible_duplicate_of", s.possibleDuplicateOf ?: JSONObject.NULL)
-        put("repost_count", s.repostCount)
-        put("last_seen_at", s.lastSeenAt)
-        put("removed_at", s.removedAt ?: JSONObject.NULL)
-        put("removed_reason", s.removedReason ?: JSONObject.NULL)
-        put("content_hash", s.contentHash)
-        put("extras", try { JSONObject(s.extrasJson) } catch (e: Exception) { s.extrasJson })
-    }
-
-    private fun csv(v: Any?): String {
-        if (v == null) return ""
-        val s = v.toString()
-        return if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
+        val name = "bookkeeper-probe-${stamp()}.zip"
+        return Result(write(context, name, "application/zip", buf.toByteArray()), name, captures.size)
     }
 
     private fun stamp(): String = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())

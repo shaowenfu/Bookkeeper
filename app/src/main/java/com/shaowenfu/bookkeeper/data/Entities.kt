@@ -2,89 +2,72 @@ package com.shaowenfu.bookkeeper.data
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
-import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
- * 一条原始通知样本。只追加、不改内容（仅 repost 计数 / removed_at 会更新），
- * M1 时可以原样迁移成 raw_event（source = package_name, kind = "notification", payload = extras_json）。
+ * 一次采样：一次按钮/磁贴触发，或一张分享进来的截图。
+ * 同时保存“文字路径”和“看图路径”的识别结果，用来比较两种方案。
  */
-@Entity(
-    tableName = "notification_sample",
-    indices = [
-        Index(value = ["package_name", "sbn_key"]),
-        Index(value = ["post_time"]),
-        Index(value = ["content_hash"]),
-    ],
-)
-data class NotificationSample(
+@Entity(tableName = "capture")
+data class Capture(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    @ColumnInfo(name = "package_name") val packageName: String,
-    /** StatusBarNotification.key，同一条通知更新时保持不变 */
-    @ColumnInfo(name = "sbn_key") val sbnKey: String,
-    @ColumnInfo(name = "notification_id") val notificationId: Int,
-    @ColumnInfo(name = "tag") val tag: String?,
-    /** 系统记录的通知发出时间（ms） */
-    @ColumnInfo(name = "post_time") val postTime: Long,
-    /** 本 App 收到回调的时间（ms） */
-    @ColumnInfo(name = "received_at") val receivedAt: Long,
-    @ColumnInfo(name = "tz_id") val tzId: String,
-    /** posted = onNotificationPosted；snapshot = 监听重连时补抓的当前活动通知 */
-    @ColumnInfo(name = "capture_source") val captureSource: String,
-    @ColumnInfo(name = "title") val title: String?,
-    @ColumnInfo(name = "text") val text: String?,
-    @ColumnInfo(name = "big_text") val bigText: String?,
-    @ColumnInfo(name = "sub_text") val subText: String?,
-    @ColumnInfo(name = "summary_text") val summaryText: String?,
-    @ColumnInfo(name = "text_lines") val textLines: String?,
-    @ColumnInfo(name = "ticker_text") val tickerText: String?,
-    @ColumnInfo(name = "category") val category: String?,
-    @ColumnInfo(name = "channel_id") val channelId: String?,
-    @ColumnInfo(name = "group_key") val groupKey: String?,
-    @ColumnInfo(name = "is_group_summary") val isGroupSummary: Boolean,
-    @ColumnInfo(name = "is_ongoing") val isOngoing: Boolean,
-    @ColumnInfo(name = "flags") val flags: Int,
-    /** 全部 extras + actions 等，逐项转成字符串后的 JSON */
-    @ColumnInfo(name = "extras_json") val extrasJson: String,
-    /** package|title|text|bigText|subText|textLines 的 SHA-256，用于去重 */
-    @ColumnInfo(name = "content_hash") val contentHash: String,
-    /** 同一个 key 之前出现过、但内容变了 → 这是一条更新 */
-    @ColumnInfo(name = "is_update") val isUpdate: Boolean,
-    /** is_update 时，指向同 key 的上一条样本 */
-    @ColumnInfo(name = "previous_id") val previousId: Long?,
-    /** 不同 key 但内容完全相同、且在短时间内出现 → 疑似重复推送（仍然保留） */
-    @ColumnInfo(name = "possible_duplicate_of") val possibleDuplicateOf: Long?,
-    /** 同 key + 同内容的重发次数（重发不新增行，只在这里计数） */
-    @ColumnInfo(name = "repost_count") val repostCount: Int = 0,
-    @ColumnInfo(name = "last_seen_at") val lastSeenAt: Long,
-    @ColumnInfo(name = "removed_at") val removedAt: Long? = null,
-    @ColumnInfo(name = "removed_reason") val removedReason: Int? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    /** a11y_button / tile / share / gallery / in_app */
+    val trigger: String,
+    /** 被读取的前台 App 包名；分享导入时为 null */
+    @ColumnInfo(name = "package_name") val packageName: String? = null,
+    @ColumnInfo(name = "window_title") val windowTitle: String? = null,
+
+    // ---- 无障碍节点文字 ----
+    @ColumnInfo(name = "node_count") val nodeCount: Int = 0,
+    /** 第一次读取到的可见文字字数（WebView 页面第一次可能为空） */
+    @ColumnInfo(name = "text_chars_first") val textCharsFirst: Int = 0,
+    @ColumnInfo(name = "text_chars") val textChars: Int = 0,
+    @ColumnInfo(name = "retried_read") val retriedRead: Boolean = false,
+    /** 节点列表 JSON：text / desc / id / cls / bounds / visible */
+    @ColumnInfo(name = "nodes_json") val nodesJson: String? = null,
+    /** 按屏幕位置排序后的可见文字，一行一个节点 */
+    @ColumnInfo(name = "flat_text") val flatText: String? = null,
+    @ColumnInfo(name = "read_ms") val readMs: Long? = null,
+
+    // ---- 截图 ----
+    @ColumnInfo(name = "image_path") val imagePath: String? = null,
+    /** ok / black / error:<原因> / none */
+    @ColumnInfo(name = "image_status") val imageStatus: String = "none",
+    @ColumnInfo(name = "image_w") val imageW: Int? = null,
+    @ColumnInfo(name = "image_h") val imageH: Int? = null,
+    @ColumnInfo(name = "screenshot_ms") val screenshotMs: Long? = null,
+
+    // ---- 文字路径识别 ----
+    @ColumnInfo(name = "text_model") val textModel: String? = null,
+    @ColumnInfo(name = "text_result") val textResult: String? = null,
+    @ColumnInfo(name = "text_latency_ms") val textLatencyMs: Long? = null,
+    @ColumnInfo(name = "text_error") val textError: String? = null,
+
+    // ---- 看图路径识别 ----
+    @ColumnInfo(name = "image_model") val imageModel: String? = null,
+    @ColumnInfo(name = "image_result") val imageResult: String? = null,
+    @ColumnInfo(name = "image_latency_ms") val imageLatencyMs: Long? = null,
+    @ColumnInfo(name = "image_error") val imageError: String? = null,
+    @ColumnInfo(name = "image_parts") val imageParts: Int? = null,
+
+    // ---- 你手动标注，用来算准确率 ----
+    /** 页面类型标签，例如 “微信支付成功” */
+    @ColumnInfo(name = "page_label") val pageLabel: String? = null,
+    /** 实际金额（多笔用逗号分隔） */
+    @ColumnInfo(name = "true_amount") val trueAmount: String? = null,
+    /** 文字路径是否正确：null 未标注 */
+    @ColumnInfo(name = "text_ok") val textOk: Boolean? = null,
+    @ColumnInfo(name = "image_ok") val imageOk: Boolean? = null,
+    val note: String? = null,
 )
 
-/** 监听器生命周期日志：用来找出 7 天里的“漏听”时间段 */
-@Entity(tableName = "listener_event", indices = [Index(value = ["at"])])
-data class ListenerEvent(
+/** 无障碍服务的连接 / 断开记录：用来看一周内被系统杀掉几次 */
+@Entity(tableName = "service_event")
+data class ServiceEvent(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val at: Long,
-    /** connected / disconnected / permission_lost / permission_ok / rebind_requested / keepalive_started / check */
+    /** connected / unbind / destroyed / interrupted / enabled_but_dead */
     val type: String,
     val detail: String? = null,
-)
-
-/** 白名单之外的包名（只记包名和次数，不存内容），用来核对包名是否写对 */
-@Entity(tableName = "seen_package")
-data class SeenPackage(
-    @PrimaryKey @ColumnInfo(name = "package_name") val packageName: String,
-    val count: Int,
-    @ColumnInfo(name = "first_seen_at") val firstSeenAt: Long,
-    @ColumnInfo(name = "last_seen_at") val lastSeenAt: Long,
-)
-
-data class PackageCount(
-    @ColumnInfo(name = "package_name") val packageName: String,
-    val total: Int,
-    val updates: Int,
-    @ColumnInfo(name = "possible_dups") val possibleDups: Int,
-    val reposts: Int,
-    @ColumnInfo(name = "last_post_time") val lastPostTime: Long?,
 )
