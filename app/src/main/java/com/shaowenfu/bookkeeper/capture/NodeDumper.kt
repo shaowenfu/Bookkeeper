@@ -1,4 +1,4 @@
-package com.shaowenfu.bookkeeper.probe
+package com.shaowenfu.bookkeeper.capture
 
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo

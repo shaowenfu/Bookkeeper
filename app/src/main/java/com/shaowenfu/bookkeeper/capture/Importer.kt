@@ -1,19 +1,18 @@
-package com.shaowenfu.bookkeeper.probe
+package com.shaowenfu.bookkeeper.capture
 
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
 import com.shaowenfu.bookkeeper.data.AppDatabase
-import com.shaowenfu.bookkeeper.data.Capture
-import com.shaowenfu.bookkeeper.settings.Prefs
+import com.shaowenfu.bookkeeper.data.RawEvent
+import com.shaowenfu.bookkeeper.recognize.RecognitionRunner
 import java.io.File
 
-/** 方案一：分享或从相册选择的截图。复制到 App 私有目录后再识别（只走看图路径）。 */
+/** 分享或从相册选择的截图（支付页、订单页、账单长截图）。复制到 App 私有目录后排队识别。 */
 object Importer {
-    suspend fun importUris(context: Context, uris: List<Uri>, trigger: String): List<Long> {
+    suspend fun importUris(context: Context, uris: List<Uri>, source: String): List<Long> {
         val app = context.applicationContext
-        val dao = AppDatabase.get(app).captures()
-        val prefs = Prefs(app)
+        val dao = AppDatabase.get(app).rawEvents()
         val ids = ArrayList<Long>()
         val now = System.currentTimeMillis()
         uris.forEachIndexed { i, uri ->
@@ -33,16 +32,11 @@ object Importer {
                     if (black) "black" else "ok"
                 }
             }
-            val id = dao.insert(
-                Capture(
-                    createdAt = now + i, trigger = trigger,
-                    imagePath = if (ok) f.absolutePath else null, imageStatus = status,
-                    imageW = size?.w, imageH = size?.h,
-                )
+            ids += dao.insert(
+                RawEvent(createdAt = now + i, source = source, imagePath = if (ok) f.absolutePath else null, imageStatus = status)
             )
-            ids += id
-            if (prefs.autoImage && status == "ok") Extractor.launch(app, id, text = false, image = true)
         }
+        if (ids.isNotEmpty()) RecognitionRunner.kick(app)
         return ids
     }
 }

@@ -8,22 +8,33 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 /**
- * M0′ 读屏探针：不常驻后台。只有在你点无障碍按钮、磁贴或分享截图时才干活。
+ * 截图一键记账。没有常驻后台服务：只在长按音量键、点磁贴或分享截图时干活，
+ * 识别的那几秒用短时前台服务保活，识别完就退出。
  */
 class BookkeeperApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_RESULT, "识别结果", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "每次采样后显示识别出的金额和耗时，方便当场核对"
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_LEDGER, "记账结果", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "每次识别后显示记了哪笔，可以直接撤销"
             }
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_WORKING, "正在识别", NotificationManager.IMPORTANCE_MIN).apply {
+                description = "识别期间的几秒内显示，识别完自动消失"
+                setShowBadge(false)
+            }
+        )
+        // 探针阶段的旧频道
+        nm.deleteNotificationChannel("probe_result")
     }
 
     companion object {
-        const val CHANNEL_RESULT = "probe_result"
+        const val CHANNEL_LEDGER = "ledger"
+        const val CHANNEL_WORKING = "working"
 
-        /** 进程级协程作用域：触发入口（无障碍、磁贴、分享页）结束后，识别请求也能跑完 */
+        /** 进程级协程作用域：触发入口结束后，写库等收尾工作也能完成 */
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

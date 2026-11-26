@@ -4,13 +4,16 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.shaowenfu.bookkeeper.capture.Importer
+import com.shaowenfu.bookkeeper.capture.ScreenReaderService
 import com.shaowenfu.bookkeeper.data.AppDatabase
-import com.shaowenfu.bookkeeper.data.Capture
+import com.shaowenfu.bookkeeper.data.LineItem
+import com.shaowenfu.bookkeeper.data.MonthTotal
+import com.shaowenfu.bookkeeper.data.RawEvent
 import com.shaowenfu.bookkeeper.data.ServiceEvent
+import com.shaowenfu.bookkeeper.data.Tx
 import com.shaowenfu.bookkeeper.export.Exporter
-import com.shaowenfu.bookkeeper.probe.Extractor
-import com.shaowenfu.bookkeeper.probe.Importer
-import com.shaowenfu.bookkeeper.probe.ScreenReaderService
+import com.shaowenfu.bookkeeper.recognize.RecognitionRunner
 import com.shaowenfu.bookkeeper.settings.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -20,7 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
+import java.util.Calendar
 
 data class Health(
     val serviceEnabled: Boolean = false,
@@ -33,14 +36,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val db = AppDatabase.get(app)
     val prefs = Prefs(app)
 
-    val captures: StateFlow<List<Capture>> =
-        db.captures().observeAll().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-    val events: StateFlow<List<ServiceEvent>> =
+    val txs: StateFlow<List<Tx>> =
+        db.txs().observeActive().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val monthTotal: StateFlow<MonthTotal> = run {
+        val c = Calendar.getInstance().apply {
+            set(Calendar.DAY_OF_MONTH, 1); set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
+        val from = c.timeInMillis
+        c.add(Calendar.MONTH, 1)
+        db.txs().observeTotal(from, c.timeInMillis)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), MonthTotal(0, 0, 0))
+    }
+    val events: StateFlow<List<RawEvent>> =
+        db.rawEvents().observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val serviceEvents: StateFlow<List<ServiceEvent>> =
         db.serviceEvents().observeRecent().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _health = MutableStateFlow(Health())
     val health: StateFlow<Health> = _health
-
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
     private val _lastExport = MutableStateFlow<Pair<Uri, String>?>(null)
@@ -52,57 +66,62 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val enabled = ScreenReaderService.isEnabledInSettings(app)
         val connected = ScreenReaderService.instance != null
-        // 设置里开着但服务没连上：多半是进程被系统杀了，记一笔
         if (enabled && !connected && !reportedDead) {
             reportedDead = true
             ScreenReaderService.logEvent(app, "enabled_but_dead", "app_open")
         }
         if (connected) reportedDead = false
         _health.value = Health(enabled, connected, notificationsAllowed, prefs.apiKey.isNotBlank())
+        // 打开 App 时把没识别完的补上（App 在前台，可以起前台服务）
+        viewModelScope.launch {
+            if (prefs.apiKey.isNotBlank() && db.rawEvents().todoCount() > 0) RecognitionRunner.kick(app)
+        }
     }
 
-    fun observe(id: Long): Flow<Capture?> = db.captures().observe(id)
+    fun observeTx(id: Long): Flow<Tx?> = db.txs().observe(id)
+    fun observeItems(txId: Long): Flow<List<LineItem>> = db.lineItems().observeForTx(txId)
+    fun observeEvent(id: Long): Flow<RawEvent?> = db.rawEvents().observe(id)
+    suspend fun eventsForTx(txId: Long): List<RawEvent> = db.rawEvents().forTx(txId)
 
-    fun importImages(uris: List<Uri>) = viewModelScope.launch {
-        val ids = withContext(Dispatchers.IO) { Importer.importUris(getApplication(), uris, "gallery") }
-        _message.value = "已导入 ${ids.size} 张截图" + if (prefs.autoImage) "，正在识别" else ""
+    fun saveTx(t: Tx) = viewModelScope.launch {
+        db.txs().update(t.copy(updatedAt = System.currentTimeMillis(), needsReview = false))
+        _message.value = "已保存"
     }
 
-    fun rerun(id: Long, text: Boolean, image: Boolean) {
-        Extractor.launch(getApplication(), id, text, image)
+    fun voidTx(id: Long) = viewModelScope.launch {
+        db.txs().voidTx(id)
+        _message.value = "已删除这笔"
+    }
+
+    fun retry(e: RawEvent) = viewModelScope.launch {
+        db.rawEvents().update(e.copy(status = RawEvent.STATUS_PENDING, attempts = 0, lastError = null))
+        RecognitionRunner.kick(getApplication())
         _message.value = "已重新提交识别"
     }
 
-    fun saveLabels(id: Long, label: String?, amount: String?, textOk: Boolean?, imageOk: Boolean?, note: String?) =
-        viewModelScope.launch {
-            db.captures().setLabels(id, label?.ifBlank { null }, amount?.ifBlank { null }, textOk, imageOk, note?.ifBlank { null })
-            _message.value = "标注已保存"
-        }
-
-    fun delete(c: Capture) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { c.imagePath?.let { File(it).delete() } }
-        db.captures().delete(c.id)
+    fun importImages(uris: List<Uri>) = viewModelScope.launch {
+        val ids = withContext(Dispatchers.IO) { Importer.importUris(getApplication(), uris, "gallery") }
+        _message.value = "已导入 ${ids.size} 张截图，正在识别"
     }
 
-    fun export(withImages: Boolean) = viewModelScope.launch {
+    fun export(json: Boolean) = viewModelScope.launch {
         try {
             val r = withContext(Dispatchers.IO) {
-                if (withImages) Exporter.exportZip(getApplication()) else Exporter.exportJson(getApplication())
+                if (json) Exporter.exportJson(getApplication()) else Exporter.exportCsv(getApplication())
             }
-            _lastExport.value = r.uri to if (withImages) "application/zip" else "application/json"
-            _message.value = "已导出 ${r.rows} 条到 下载/Bookkeeper/${r.displayName}"
+            _lastExport.value = r.uri to if (json) "application/json" else "text/csv"
+            _message.value = "已导出 ${r.rows} 笔到 下载/Bookkeeper/${r.displayName}"
         } catch (e: Exception) {
             _message.value = "导出失败：${e.message}"
         }
     }
 
-    fun saveSettings(apiKey: String, baseUrl: String, textModel: String, imageModel: String,
-                     autoText: Boolean, autoImage: Boolean, keepShot: Boolean) {
-        prefs.apiKey = apiKey; prefs.baseUrl = baseUrl
-        prefs.textModel = textModel; prefs.imageModel = imageModel
-        prefs.autoText = autoText; prefs.autoImage = autoImage; prefs.keepScreenshot = keepShot
+    fun saveSettings(apiKey: String, baseUrl: String, model: String, captureOnWake: Boolean) {
+        val hadKey = prefs.apiKey.isNotBlank()
+        prefs.apiKey = apiKey; prefs.baseUrl = baseUrl; prefs.model = model; prefs.captureOnWake = captureOnWake
         _health.value = _health.value.copy(apiKeySet = prefs.apiKey.isNotBlank())
         _message.value = "设置已保存"
+        if (!hadKey && prefs.apiKey.isNotBlank()) RecognitionRunner.kick(getApplication())
     }
 
     fun clearMessage() { _message.value = null }

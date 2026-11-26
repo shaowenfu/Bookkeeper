@@ -1,4 +1,4 @@
-package com.shaowenfu.bookkeeper.probe
+package com.shaowenfu.bookkeeper.capture
 
 import android.content.Intent
 import android.net.Uri
@@ -22,7 +22,7 @@ class ShareImportActivity : ComponentActivity() {
         }
         lifecycleScope.launch {
             val ids = withContext(Dispatchers.IO) { Importer.importUris(applicationContext, uris, "share") }
-            Toast.makeText(this@ShareImportActivity, "已导入 ${ids.size} 张截图，正在识别", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@ShareImportActivity, "已导入 ${ids.size} 张截图，正在识别记账", Toast.LENGTH_SHORT).show()
             finish()
         }
     }

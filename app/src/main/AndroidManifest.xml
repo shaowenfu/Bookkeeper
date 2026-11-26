@@ -4,8 +4,11 @@
 
     <!-- 只用于调用 DeepSeek API -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- 识别完成后弹结果通知 -->
+    <!-- 记账后弹结果通知 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 识别期间的短时前台服务：识别完立即退出 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".BookkeeperApp"
@@ -26,9 +29,9 @@
             </intent-filter>
         </activity>
 
-        <!-- 方案一：分享截图到本 App -->
+        <!-- 分享截图到本 App -->
         <activity
-            android:name=".probe.ShareImportActivity"
+            android:name=".capture.ShareImportActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:label="@string/share_label"
@@ -45,9 +48,9 @@
             </intent-filter>
         </activity>
 
-        <!-- 方案二：按需读屏。不订阅屏幕事件，只在点无障碍按钮或磁贴时读一次 -->
+        <!-- 按需读屏：长按两个音量键（无障碍快捷方式）或点磁贴时截一次屏。不订阅屏幕事件 -->
         <service
-            android:name=".probe.ScreenReaderService"
+            android:name=".capture.ScreenReaderService"
             android:exported="true"
             android:label="@string/a11y_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
@@ -61,7 +64,7 @@
 
         <!-- 快速设置磁贴：备用入口 -->
         <service
-            android:name=".probe.CaptureTileService"
+            android:name=".capture.CaptureTileService"
             android:exported="true"
             android:icon="@drawable/ic_stat_notify"
             android:label="@string/tile_label"
@@ -70,5 +73,20 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+        <!-- 识别期间的短时前台服务：识别完立即退出 -->
+        <service
+            android:name=".recognize.RecognitionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".recognize.UndoReceiver"
+            android:exported="false" />
+
+        <!-- WorkManager 加急任务在 Android 11 及以下以前台服务运行，需要声明类型 -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
     </application>
 </manifest>

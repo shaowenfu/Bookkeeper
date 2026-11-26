@@ -8,104 +8,97 @@ import android.os.Environment
 import android.provider.MediaStore
 import com.shaowenfu.bookkeeper.BuildConfig
 import com.shaowenfu.bookkeeper.data.AppDatabase
-import com.shaowenfu.bookkeeper.data.Capture
-import com.shaowenfu.bookkeeper.probe.Extractor
+import com.shaowenfu.bookkeeper.ui.Money
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /**
  * 导出到 下载/Bookkeeper/。
- * JSON：节点文字、两路识别结果、耗时、你的标注、无障碍服务连接记录。
- * ZIP：同一个 JSON 加上全部截图（截图里可能有余额、卡号等，分享前注意）。
+ * CSV：账本（一行一笔，商品明细合并成一列），用 Excel 打开。
+ * JSON：账本 + 商品 + 全部识别记录（含模型原始输出，不含图片），用于排查和重新计算。
  */
 object Exporter {
     data class Result(val uri: Uri, val displayName: String, val rows: Int)
 
     private val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
+    private val csvTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
     private fun iso(ms: Long?): Any = if (ms == null) JSONObject.NULL else isoFmt.format(Date(ms))
     private fun n(v: Any?): Any = v ?: JSONObject.NULL
 
-    private suspend fun buildJson(context: Context, withImages: Boolean): Pair<JSONObject, List<Capture>> {
+    suspend fun exportCsv(context: Context): Result {
         val db = AppDatabase.get(context)
-        val captures = db.captures().all()
-        val events = db.serviceEvents().all()
-        val root = JSONObject()
-        root.put("format", "bookkeeper-probe-samples")
-        root.put("format_version", 1)
-        root.put("exported_at", iso(System.currentTimeMillis()))
-        root.put("device_tz", TimeZone.getDefault().id)
-        root.put("device", "${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-        root.put("app_version", BuildConfig.VERSION_NAME)
-        root.put("includes_images", withImages)
-
-        val arr = JSONArray()
-        captures.forEach { c -> arr.put(toJson(c, withImages)) }
-        root.put("captures", arr)
-
-        val ev = JSONArray()
-        events.forEach { e -> ev.put(JSONObject().put("at_iso", iso(e.at)).put("at", e.at).put("type", e.type).put("detail", n(e.detail))) }
-        root.put("service_events", ev)
-        return root to captures
-    }
-
-    private fun toJson(c: Capture, withImages: Boolean) = JSONObject().apply {
-        put("id", c.id)
-        put("created_at", c.createdAt); put("created_at_iso", iso(c.createdAt))
-        put("trigger", c.trigger)
-        put("package_name", n(c.packageName)); put("window_title", n(c.windowTitle))
-        put("node_count", c.nodeCount)
-        put("text_chars_first", c.textCharsFirst); put("text_chars", c.textChars); put("retried_read", c.retriedRead)
-        put("read_ms", n(c.readMs))
-        put("flat_text", n(c.flatText))
-        put("nodes", c.nodesJson?.let { runCatching { JSONArray(it) }.getOrNull() } ?: JSONObject.NULL)
-        put("image_status", c.imageStatus); put("image_w", n(c.imageW)); put("image_h", n(c.imageH))
-        put("screenshot_ms", n(c.screenshotMs))
-        put("image_file", if (withImages && c.imagePath != null && File(c.imagePath).exists()) "images/${c.id}.jpg" else JSONObject.NULL)
-        put("text_model", n(c.textModel)); put("text_latency_ms", n(c.textLatencyMs)); put("text_error", n(c.textError))
-        put("text_result", parsed(c.textResult))
-        put("image_model", n(c.imageModel)); put("image_latency_ms", n(c.imageLatencyMs)); put("image_error", n(c.imageError))
-        put("image_parts", n(c.imageParts))
-        put("image_result", parsed(c.imageResult))
-        val found = Extractor.amountsFoundInText(c)
-        put("image_amounts_found_in_text", if (found == null) JSONObject.NULL else "${found.first}/${found.second}")
-        put("page_label", n(c.pageLabel)); put("true_amount", n(c.trueAmount))
-        put("text_ok", n(c.textOk)); put("image_ok", n(c.imageOk)); put("note", n(c.note))
-    }
-
-    private fun parsed(s: String?): Any = when {
-        s == null -> JSONObject.NULL
-        else -> runCatching { JSONObject(s) }.getOrElse { s }
+        val txs = db.txs().all()
+        val items = db.lineItems().all().groupBy { it.txId }
+        val header = listOf("id", "时间", "时间为截图时间", "类型", "金额", "商户", "平台", "渠道", "付款方式", "分类", "自动扣费", "待核对", "已删除", "商品", "备注")
+        val sb = StringBuilder("﻿").append(header.joinToString(",")).append("\r\n")
+        for (t in txs) {
+            val its = items[t.id].orEmpty().joinToString("；") { li -> li.name + (li.amountCents?.let { " ${Money.yuan(it)}" } ?: "") }
+            val row = listOf(
+                t.id, csvTime.format(Date(t.occurredAt)), t.timeEstimated, Money.directionLabel(t.direction), Money.yuan(t.amountCents),
+                t.merchant, t.app, t.channel, t.funding, t.category, t.isAutoDebit, t.needsReview, t.status == "void", its, t.note,
+            )
+            sb.append(row.joinToString(",") { csv(it) }).append("\r\n")
+        }
+        val name = "bookkeeper-${stamp()}.csv"
+        return Result(write(context, name, "text/csv", sb.toString().toByteArray()), name, txs.size)
     }
 
     suspend fun exportJson(context: Context): Result {
-        val (root, captures) = buildJson(context, withImages = false)
-        val name = "bookkeeper-probe-${stamp()}.json"
-        return Result(write(context, name, "application/json", root.toString(2).toByteArray()), name, captures.size)
+        val db = AppDatabase.get(context)
+        val txs = db.txs().all()
+        val root = JSONObject()
+            .put("format", "bookkeeper-ledger").put("format_version", 1)
+            .put("exported_at", iso(System.currentTimeMillis()))
+            .put("device_tz", TimeZone.getDefault().id)
+            .put("device", "${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            .put("app_version", BuildConfig.VERSION_NAME)
+
+        root.put("transactions", JSONArray().apply {
+            txs.forEach { t ->
+                put(JSONObject()
+                    .put("id", t.id).put("occurred_at", iso(t.occurredAt)).put("time_estimated", t.timeEstimated)
+                    .put("amount_cents", t.amountCents).put("direction", t.direction)
+                    .put("merchant", n(t.merchant)).put("app", n(t.app)).put("channel", n(t.channel)).put("funding", n(t.funding))
+                    .put("category", n(t.category)).put("is_auto_debit", t.isAutoDebit).put("needs_review", t.needsReview)
+                    .put("status", t.status).put("note", n(t.note))
+                    .put("created_at", iso(t.createdAt)).put("updated_at", iso(t.updatedAt)))
+            }
+        })
+        root.put("line_items", JSONArray().apply {
+            db.lineItems().all().forEach { li ->
+                put(JSONObject().put("tx_id", li.txId).put("name", li.name).put("qty", n(li.qty))
+                    .put("amount_cents", n(li.amountCents)).put("raw_event_id", n(li.rawEventId)))
+            }
+        })
+        root.put("tx_events", JSONArray().apply {
+            db.txEvents().all().forEach { put(JSONObject().put("tx_id", it.txId).put("raw_event_id", it.rawEventId).put("role", it.role)) }
+        })
+        root.put("raw_events", JSONArray().apply {
+            db.rawEvents().all().forEach { e ->
+                put(JSONObject()
+                    .put("id", e.id).put("created_at", iso(e.createdAt)).put("source", e.source)
+                    .put("package_name", n(e.packageName)).put("image_status", e.imageStatus)
+                    .put("text_chars", e.textChars).put("flat_text", n(e.flatText))
+                    .put("status", e.status).put("attempts", e.attempts).put("last_error", n(e.lastError))
+                    .put("model", n(e.model)).put("latency_ms", n(e.latencyMs))
+                    .put("result", e.resultJson?.let { runCatching { JSONObject(it) }.getOrDefault(it) } ?: JSONObject.NULL))
+            }
+        })
+        root.put("service_events", JSONArray().apply {
+            db.serviceEvents().all().forEach { put(JSONObject().put("at", iso(it.at)).put("type", it.type).put("detail", n(it.detail))) }
+        })
+        val name = "bookkeeper-${stamp()}.json"
+        return Result(write(context, name, "application/json", root.toString(2).toByteArray()), name, txs.size)
     }
 
-    suspend fun exportZip(context: Context): Result {
-        val (root, captures) = buildJson(context, withImages = true)
-        val buf = ByteArrayOutputStream()
-        ZipOutputStream(buf).use { zip ->
-            zip.putNextEntry(ZipEntry("samples.json"))
-            zip.write(root.toString(2).toByteArray()); zip.closeEntry()
-            captures.forEach { c ->
-                val f = c.imagePath?.let { File(it) }?.takeIf { it.exists() } ?: return@forEach
-                zip.putNextEntry(ZipEntry("images/${c.id}.jpg"))
-                f.inputStream().use { it.copyTo(zip) }
-                zip.closeEntry()
-            }
-        }
-        val name = "bookkeeper-probe-${stamp()}.zip"
-        return Result(write(context, name, "application/zip", buf.toByteArray()), name, captures.size)
+    private fun csv(v: Any?): String {
+        if (v == null) return ""
+        val s = v.toString()
+        return if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) "\"" + s.replace("\"", "\"\"") + "\"" else s
     }
 
     private fun stamp(): String = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
@@ -118,8 +111,7 @@ object Exporter {
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Bookkeeper")
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("无法在“下载”目录创建文件")
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("无法在“下载”目录创建文件")
         resolver.openOutputStream(uri)!!.use { it.write(bytes) }
         values.clear()
         values.put(MediaStore.Downloads.IS_PENDING, 0)

@@ -21,15 +21,14 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.mutableStateOf
 import com.shaowenfu.bookkeeper.R
-import com.shaowenfu.bookkeeper.probe.CaptureTileService
+import com.shaowenfu.bookkeeper.capture.CaptureTileService
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
 
-    /** 从通知点进来时直接打开那条样本 */
-    private val openCaptureId = mutableStateOf<Long?>(null)
+    /** 从通知点进来时直接打开那笔交易 / 那条识别记录 */
+    private val nav = NavState()
 
     private val notifPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
@@ -47,7 +46,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 MainScreen(
                     vm = vm,
-                    openCaptureId = openCaptureId,
+                    nav = nav,
                     actions = ScreenActions(
                         openAccessibilitySettings = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                         openAppDetails = {
@@ -75,8 +74,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val id = intent?.getLongExtra(EXTRA_CAPTURE_ID, -1L) ?: -1L
-        if (id > 0) openCaptureId.value = id
+        val tx = intent?.getLongExtra(EXTRA_TX_ID, -1L) ?: -1L
+        val ev = intent?.getLongExtra(EXTRA_EVENT_ID, -1L) ?: -1L
+        when {
+            tx > 0 -> nav.openTx(tx)
+            ev > 0 -> nav.openEvent(ev)
+            intent?.hasExtra(EXTRA_EVENT_ID) == true -> nav.openEvents()
+        }
     }
 
     override fun onResume() {
@@ -100,16 +104,17 @@ class MainActivity : ComponentActivity() {
                     StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED -> "磁贴已添加"
                     StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED -> "磁贴已经在了"
                     StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_NOT_ADDED -> "没有添加"
-                    else -> "系统不支持一键添加，请下拉通知栏 → 编辑，手动拖入“读屏记账”"
+                    else -> "系统不支持一键添加，请下拉通知栏 → 编辑，手动拖入“截图记账”"
                 }
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
             }
         } else {
-            Toast.makeText(this, "请下拉通知栏 → 编辑，手动拖入“读屏记账”", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "请下拉通知栏 → 编辑，手动拖入“截图记账”", Toast.LENGTH_LONG).show()
         }
     }
 
     companion object {
-        const val EXTRA_CAPTURE_ID = "capture_id"
+        const val EXTRA_TX_ID = "tx_id"
+        const val EXTRA_EVENT_ID = "event_id"
     }
 }

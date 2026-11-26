@@ -1,4 +1,4 @@
-package com.shaowenfu.bookkeeper.probe
+package com.shaowenfu.bookkeeper.capture
 
 /** 发给模型前的最小脱敏：手机号、长数字串（卡号、证件号、订单号以外的长号码）。 */
 object Masking {

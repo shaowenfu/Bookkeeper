@@ -1,4 +1,4 @@
-package com.shaowenfu.bookkeeper.probe
+package com.shaowenfu.bookkeeper.capture
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -37,7 +37,7 @@ object Images {
     }
 
     /**
-     * 准备上传：宽度缩到 ≤ 1080；长截图（高 > 2.2 倍宽）切成若干段，每段高 2 倍宽、相邻重叠 8%。
+     * 准备上传：宽度缩到 ≤ 1080；长截图（高 > 2.5 倍宽，普通 1080×2400 截图不切）切成若干段，每段高 2 倍宽、相邻重叠 8%。
      * 模型每张图最多约 1024 token，整张长图直接传会被缩到看不清。
      */
     fun prepareForUpload(file: File, maxWidth: Int = 1080): List<String> {
@@ -52,7 +52,7 @@ object Images {
         } else decoded
 
         val parts = ArrayList<String>()
-        if (bmp.height <= bmp.width * 22 / 10) {
+        if (bmp.height <= bmp.width * 25 / 10) {
             parts += b64(bmp)
         } else {
             val partH = bmp.width * 2
