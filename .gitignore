@@ -9,3 +9,7 @@ captures/
 *.jks
 *.keystore
 __pycache__/
+
+# iOS（工程由 XcodeGen 生成）
+ios/*.xcodeproj/
+ios/build/
