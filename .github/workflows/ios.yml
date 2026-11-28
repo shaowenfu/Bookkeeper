@@ -1,0 +1,129 @@
+name: iOS
+
+# 没配置签名 Secrets 时：只为模拟器编译，检查代码能不能过。
+# 配置了下面 4 个 Secrets 时：签名打包并上传到 TestFlight（构建号 = 本次运行编号）。
+#   APPLE_TEAM_ID        开发者账号的 Team ID（10 位）
+#   ASC_KEY_ID           App Store Connect API 密钥的 Key ID
+#   ASC_ISSUER_ID        App Store Connect API 密钥的 Issuer ID
+#   ASC_KEY_P8           下载的 AuthKey_XXXX.p8 文件的全部内容
+# 可选 Repository variable：IOS_BUNDLE_ID（默认 com.shaowenfu.bookkeeper）
+# 详见 docs/iOS.md
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "上传到 TestFlight（需要已配置签名 Secrets）"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID || 'com.shaowenfu.bookkeeper' }}
+      HAS_SIGNING: ${{ secrets.ASC_KEY_P8 != '' && secrets.APPLE_TEAM_ID != '' && secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Generate project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for simulator (no signing)
+        if: env.HAS_SIGNING != 'true'
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project Bookkeeper.xcodeproj -scheme Bookkeeper -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO build | tee "$RUNNER_TEMP/build.log" | grep -E "error:|warning: .*Swift|BUILD" || true
+          grep -q "BUILD SUCCEEDED" "$RUNNER_TEMP/build.log"
+          echo "::notice::只编译了模拟器版本。配置签名 Secrets 后会打包上传 TestFlight，见 docs/iOS.md"
+
+      - name: Write API key
+        if: env.HAS_SIGNING == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          KEY_PATH="$RUNNER_TEMP/keys/AuthKey_${ASC_KEY_ID}.p8"
+          # 兼容直接粘贴文件内容，或 base64 编码后的内容
+          if printf '%s' "$ASC_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH"
+          else
+            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$KEY_PATH"
+          fi
+          echo "KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive
+        if: env.HAS_SIGNING == 'true'
+        working-directory: ios
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild -project Bookkeeper.xcodeproj -scheme Bookkeeper -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Bookkeeper.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            archive | tee "$RUNNER_TEMP/archive.log" | grep -E "error:|BUILD|ARCHIVE" || true
+          grep -q "ARCHIVE SUCCEEDED" "$RUNNER_TEMP/archive.log"
+
+      - name: Upload to TestFlight
+        if: env.HAS_SIGNING == 'true' && (github.event_name == 'push' || inputs.upload)
+        working-directory: ios
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>uploadSymbols</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Bookkeeper.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "::notice::已上传构建 ${{ github.run_number }}，App Store Connect 处理完（约 5–15 分钟）后会出现在 TestFlight"
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ${{ runner.temp }}/*.log

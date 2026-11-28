@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">记账采样 M0</string>
-    <string name="listener_label">记账通知采样</string>
+    <string name="app_name">截图记账</string>
+    <string name="a11y_label">截图记账</string>
+    <string name="a11y_description">付款后长按两个音量键（或点磁贴），截取当前屏幕识别付款信息并记账。只在你主动触发时截屏一次，不监听屏幕，不在后台常驻。</string>
+    <string name="tile_label">截图记账</string>
+    <string name="share_label">截图记账</string>
 </resources>

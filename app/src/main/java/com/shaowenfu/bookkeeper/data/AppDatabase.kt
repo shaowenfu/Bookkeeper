@@ -6,24 +6,25 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 @Database(
-    entities = [NotificationSample::class, ListenerEvent::class, SeenPackage::class],
+    entities = [RawEvent::class, Tx::class, TxEvent::class, LineItem::class, ServiceEvent::class],
     version = 1,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
-    abstract fun samples(): SampleDao
-    abstract fun listenerEvents(): ListenerEventDao
-    abstract fun seenPackages(): SeenPackageDao
+    abstract fun rawEvents(): RawEventDao
+    abstract fun txs(): TxDao
+    abstract fun txEvents(): TxEventDao
+    abstract fun lineItems(): LineItemDao
+    abstract fun serviceEvents(): ServiceEventDao
 
     companion object {
         @Volatile private var instance: AppDatabase? = null
 
+        // M1 用新的库文件；探针阶段的 bookkeeper_probe.db 不再使用
         fun get(context: Context): AppDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
-                    context.applicationContext,
-                    AppDatabase::class.java,
-                    "bookkeeper_m0.db",
+                    context.applicationContext, AppDatabase::class.java, "bookkeeper.db",
                 ).build().also { instance = it }
             }
     }

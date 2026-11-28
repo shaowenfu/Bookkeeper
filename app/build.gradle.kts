@@ -21,8 +21,8 @@ android {
         applicationId = "com.shaowenfu.bookkeeper"
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0-m0"
+        versionCode = 4
+        versionName = "0.3.1"
     }
 
     signingConfigs {
@@ -82,4 +82,5 @@ dependencies {
     ksp("androidx.room:room-compiler:2.7.1")
 
     implementation("androidx.work:work-runtime-ktx:2.10.1")
+
 }
