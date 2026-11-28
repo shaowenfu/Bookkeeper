@@ -24,6 +24,9 @@ object Ledger {
     private val DIRECTIONS = setOf("expense", "refund", "income", "transfer", "repayment")
     private const val MIN = 60_000L
 
+    /** 屏幕文字里确实出现过金额，才拿它核对模型读出的金额 */
+    private val MONEY_IN_TEXT = Regex("[¥￥]\\s*\\d|\\d+\\.\\d{2}")
+
     suspend fun apply(context: Context, raw: RawEvent, result: JSONObject): List<Outcome> {
         val db = AppDatabase.get(context)
         val arr = result.optJSONArray("transactions") ?: return emptyList()
@@ -41,7 +44,7 @@ object Ledger {
                 val occurredAt = parsedTime ?: raw.createdAt
                 val confidence = o.optDouble("confidence", 1.0)
                 val amountStr = BigDecimal(cents).movePointLeft(2).setScale(2).toPlainString()
-                val textMismatch = !raw.flatText.isNullOrBlank() && raw.textChars >= 10 &&
+                val textMismatch = !raw.flatText.isNullOrBlank() && raw.textChars >= 10 && MONEY_IN_TEXT.containsMatchIn(raw.flatText) &&
                     !raw.flatText.replace(",", "").contains(amountStr)
                 val items = parseItems(o.optJSONArray("items"))
                 val now = System.currentTimeMillis()

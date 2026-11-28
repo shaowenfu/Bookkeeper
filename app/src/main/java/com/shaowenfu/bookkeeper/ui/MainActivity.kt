@@ -21,6 +21,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import com.shaowenfu.bookkeeper.settings.BatteryGuide
 import com.shaowenfu.bookkeeper.R
 import com.shaowenfu.bookkeeper.capture.CaptureTileService
 
@@ -52,6 +53,7 @@ class MainActivity : ComponentActivity() {
                         openAppDetails = {
                             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData(Uri.parse("package:$packageName")))
                         },
+                        openBatterySettings = { BatteryGuide.open(this) },
                         requestPostNotifications = { notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
                         addTile = ::addTile,
                         pickImages = {

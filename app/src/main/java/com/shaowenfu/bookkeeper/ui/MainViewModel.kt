@@ -30,6 +30,7 @@ data class Health(
     val serviceConnected: Boolean = false,
     val notificationsAllowed: Boolean = false,
     val apiKeySet: Boolean = false,
+    val batteryGuideDoneAt: Long = 0L,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -62,6 +63,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var reportedDead = false
 
+    fun markBatteryGuideDone() {
+        val now = System.currentTimeMillis()
+        prefs.batteryGuideDoneAt = now
+        _health.value = _health.value.copy(batteryGuideDoneAt = now)
+        _message.value = "好的。之后如果长按又被延迟，设置页会提示"
+    }
+
     fun refreshHealth(notificationsAllowed: Boolean) {
         val app = getApplication<Application>()
         val enabled = ScreenReaderService.isEnabledInSettings(app)
@@ -71,7 +79,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ScreenReaderService.logEvent(app, "enabled_but_dead", "app_open")
         }
         if (connected) reportedDead = false
-        _health.value = Health(enabled, connected, notificationsAllowed, prefs.apiKey.isNotBlank())
+        _health.value = Health(enabled, connected, notificationsAllowed, prefs.apiKey.isNotBlank(), prefs.batteryGuideDoneAt)
         // 打开 App 时把没识别完的补上（App 在前台，可以起前台服务）
         viewModelScope.launch {
             if (prefs.apiKey.isNotBlank() && db.rawEvents().todoCount() > 0) RecognitionRunner.kick(app)

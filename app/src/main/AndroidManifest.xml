@@ -2,6 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 识别迟到的长按时，要知道哪个是桌面 -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
     <!-- 只用于调用 DeepSeek API -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 记账后弹结果通知 -->

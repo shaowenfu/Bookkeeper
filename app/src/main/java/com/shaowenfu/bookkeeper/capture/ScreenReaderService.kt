@@ -94,6 +94,16 @@ class ScreenReaderService : AccessibilityService() {
 
     private suspend fun doCapture(trigger: String) {
         val t0 = System.currentTimeMillis()
+        if (trigger == TRIGGER_SHORTCUT) {
+            // vivo 冻结进程时，长按会被系统扣住，等用户打开本 App（或回到桌面）才送到。
+            // 这时屏幕上已经不是付款页了，截下来只会记出错账，直接丢掉。
+            val front = withContext(Dispatchers.Default) { activePackage() }
+            if (front != null && isStaleTarget(front)) {
+                logEvent(this, "stale_trigger", front)
+                toast("刚才的长按被系统延迟了，已忽略。请到设置里允许截图记账后台高耗电")
+                return
+            }
+        }
         if (trigger == TRIGGER_TILE) {
             if (Build.VERSION.SDK_INT >= 31) performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
             delay(700)
@@ -139,6 +149,25 @@ class ScreenReaderService : AccessibilityService() {
             .sortedByDescending { (if (it.isActive) 2 else 0) + (if (it.isFocused) 1 else 0) }
         val roots = wins.mapNotNull { it.root }.filter { it.packageName?.toString() != packageName }
         return roots.ifEmpty { listOfNotNull(rootInActiveWindow) }
+    }
+
+    /** 当前活动窗口的包名，包括本 App 自己 */
+    private fun activePackage(): String? {
+        val wins = runCatching { windows }.getOrDefault(emptyList())
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        val win = wins.firstOrNull { it.isActive } ?: wins.firstOrNull { it.isFocused } ?: wins.firstOrNull()
+        return (win?.root ?: rootInActiveWindow)?.packageName?.toString()
+    }
+
+    private fun isStaleTarget(pkg: String): Boolean =
+        pkg == packageName || pkg == "com.android.systemui" || pkg in launcherPackages
+
+    private val launcherPackages: Set<String> by lazy {
+        val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val found = runCatching {
+            packageManager.queryIntentActivities(home, 0).map { it.activityInfo.packageName }
+        }.getOrDefault(emptyList())
+        (found + listOf("com.bbk.launcher2", "com.vivo.launcher")).toSet()
     }
 
     private fun foregroundPackage(): String? = candidateRoots().firstOrNull()?.packageName?.toString()

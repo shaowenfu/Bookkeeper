@@ -50,6 +50,17 @@ object Recognizer {
             val out = DeepSeekClient(prefs.baseUrl, prefs.apiKey).chat(
                 prefs.model, Prompts.SYSTEM, Prompts.user(e.createdAt, e.packageName, parts.size, text), parts,
             )
+            if (out.isBlank()) {
+                // 模型偶尔对非付款页（如本 App 自己的页面）返回空内容，重试也一样，按“没有交易”处理
+                dao.update(
+                    attempt.copy(
+                        status = RawEvent.STATUS_NO_TX, resultJson = out, lastError = "模型返回空内容",
+                        latencyMs = System.currentTimeMillis() - start, processedAt = System.currentTimeMillis(),
+                    )
+                )
+                Notifier.noTransaction(app, e)
+                return
+            }
             val json = JSONObject(out)
             val outcomes = Ledger.apply(app, attempt, json)
             dao.update(

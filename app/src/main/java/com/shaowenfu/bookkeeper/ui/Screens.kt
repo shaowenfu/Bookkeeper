@@ -66,6 +66,7 @@ import com.shaowenfu.bookkeeper.data.RawEvent
 import com.shaowenfu.bookkeeper.data.Tx
 import com.shaowenfu.bookkeeper.recognize.Ledger
 import com.shaowenfu.bookkeeper.recognize.Prompts
+import com.shaowenfu.bookkeeper.settings.BatteryGuide
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -74,6 +75,7 @@ import java.util.Locale
 data class ScreenActions(
     val openAccessibilitySettings: () -> Unit,
     val openAppDetails: () -> Unit,
+    val openBatterySettings: () -> Unit,
     val requestPostNotifications: () -> Unit,
     val addTile: () -> Unit,
     val pickImages: () -> Unit,
@@ -166,6 +168,21 @@ private fun LedgerTab(vm: MainViewModel, actions: ScreenActions, onOpen: (Long) 
                     if (!h.apiKeySet) "还没填 DeepSeek API Key，到“设置”页填写。" else "无障碍服务没连上，长按两个音量键唤醒，或到“设置”页查看。",
                     color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
                 )
+            }
+        }
+        if (h.batteryGuideDoneAt == 0L && BatteryGuide.isVivo) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("先做一步：允许后台高耗电", fontWeight = FontWeight.Medium)
+                        Text("不设置的话，vivo 会冻住截图记账，付款页长按音量键会没反应。${BatteryGuide.steps}。",
+                            style = MaterialTheme.typography.bodySmall)
+                        Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = actions.openBatterySettings) { Text("去设置") }
+                            TextButton(onClick = { vm.markBatteryGuideDone() }) { Text("已设置好") }
+                        }
+                    }
+                }
             }
         }
         if (txs.isEmpty()) {
@@ -390,6 +407,10 @@ private fun SettingsTab(vm: MainViewModel, actions: ScreenActions) {
     var base by remember { mutableStateOf(p.baseUrl) }
     var model by remember { mutableStateOf(p.model) }
     var onWake by remember { mutableStateOf(p.captureOnWake) }
+    val batteryDone = h.batteryGuideDoneAt > 0
+    // 只统计“已设置好”之后、最近 7 天内的延迟长按，用来判断设置是否真的生效
+    val since = maxOf(System.currentTimeMillis() - 7 * 24 * 3600_000L, h.batteryGuideDoneAt)
+    val staleCount = serviceEvents.count { it.type == "stale_trigger" && it.at >= since }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Card { Column(Modifier.padding(16.dp)) {
@@ -404,6 +425,16 @@ private fun SettingsTab(vm: MainViewModel, actions: ScreenActions) {
                 action = "去设置", onAction = actions.openAccessibilitySettings,
             )
             if (!h.serviceEnabled) TextButton(onClick = actions.openAppDetails) { Text("打开应用信息") }
+            StatusRow(
+                ok = if (staleCount > 0) false else if (batteryDone) true else null,
+                title = "允许后台高耗电（防止长按没反应）",
+                detail = buildString {
+                    append(BatteryGuide.steps)
+                    if (staleCount > 0) append(if (batteryDone) "。设置之后仍有 $staleCount 次长按被系统延迟，请检查是否已锁定" else "。最近 7 天有 $staleCount 次长按被系统延迟")
+                },
+                action = "去设置", onAction = actions.openBatterySettings,
+            )
+            if (!batteryDone) TextButton(onClick = { vm.markBatteryGuideDone() }) { Text("我已设置好") }
             StatusRow(ok = null, title = "触发方式：长按两个音量键",
                 detail = "无障碍设置 → 截图记账 → 快捷方式，勾选“长按音量键”。付完款停在成功页，长按两个音量键约 3 秒")
             StatusRow(ok = null, title = "磁贴（备用）", detail = "下拉通知栏点“截图记账”", action = "添加", onAction = actions.addTile)

@@ -26,6 +26,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("capture_on_wake", true)
         set(v) = sp.edit().putBoolean("capture_on_wake", v).apply()
 
+    /** 用户在引导里点了“已设置好”。系统不提供查询接口，只能靠用户自己确认 */
+    var batteryGuideDoneAt: Long
+        get() = sp.getLong("battery_guide_done_at", 0L)
+        set(v) = sp.edit().putLong("battery_guide_done_at", v).apply()
+
     companion object {
         const val DEFAULT_BASE_URL = "https://api.deepseek.com"
         const val DEFAULT_MODEL = "deepseek-flash"
