@@ -9,7 +9,7 @@ struct RecognizeScreenshotIntent: AppIntent {
     static var description = IntentDescription("把一张截图（通常来自“截屏”动作）识别成账目，记进截图记账。")
     static var openAppWhenRun: Bool = false
 
-    @Parameter(title: "截图", supportedContentTypes: [.image])
+    @Parameter(title: "截图", supportedTypeIdentifiers: ["public.image"])
     var image: IntentFile
 
     static var parameterSummary: some ParameterSummary {
@@ -37,7 +37,7 @@ struct ImportImagesIntent: AppIntent {
     static var description = IntentDescription("把一张或多张图片加入识别队列，逐张识别。")
     static var openAppWhenRun: Bool = false
 
-    @Parameter(title: "图片", supportedContentTypes: [.image])
+    @Parameter(title: "图片", supportedTypeIdentifiers: ["public.image"])
     var images: [IntentFile]
 
     @MainActor
